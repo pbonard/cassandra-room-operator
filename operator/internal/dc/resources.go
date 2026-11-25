@@ -3,6 +3,8 @@ package dc
 import (
 	"fmt"
 	"strconv"
+	"strings"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -88,6 +90,11 @@ func serverArgs(dc *v1.CassandraRoomDatacenter, rack string) []string {
 		"-rack=" + rack,
 		"-authenticator=PasswordAuthenticator",
 		fmt.Sprintf("-admin-address=0.0.0.0:%d", names.MgmtPort(dc)),
+		"-data-dir=" + names.DataDir,
+	}
+	if b := dc.Spec.Backup; b != nil && b.CommitLogArchive != nil {
+		// On the data volume (hard links), uploaded by the agent.
+		args = append(args, "-commitlog-archive-dir="+names.CommitLogArchive)
 	}
 	authorizer := c.Authorizer
 	if authorizer == "" {
@@ -233,7 +240,14 @@ func statefulSet(dc *v1.CassandraRoomDatacenter, rack v1.Rack, replicas int32, a
 	if dc.Spec.Storage.Size != nil {
 		size = *dc.Spec.Storage.Size
 	}
-	annotations := map[string]string{}
+	// Prometheus scrapes the management API's /metrics (the usual
+	// annotations; a ServiceMonitor can select the pods by their labels).
+	annotations := map[string]string{
+		"prometheus.io/scrape": "true",
+		"prometheus.io/port":   strconv.Itoa(int(names.MgmtPort(dc))),
+		"prometheus.io/path":   "/metrics",
+		"prometheus.io/scheme": strings.ToLower(string(scheme(dc))),
+	}
 	if dc.Spec.RollingRestartRequestedAt != "" {
 		annotations[names.AnnotationRestartedAt] = dc.Spec.RollingRestartRequestedAt
 	}
@@ -275,6 +289,14 @@ func agentContainer(dc *v1.CassandraRoomDatacenter, b *v1.S3Storage, image strin
 		"--data-dir=" + names.DataDir,
 		"--bucket=" + b.Bucket, "--prefix=" + b.Prefix, "--region=" + b.Region, "--endpoint=" + b.Endpoint,
 		fmt.Sprintf("--concurrency=%d", max(b.Concurrency, 4)),
+		"--cluster=" + dc.Spec.ClusterName, "--datacenter=" + dc.DCName(),
+	}
+	if a := b.CommitLogArchive; a != nil {
+		every := time.Minute
+		if a.Interval != nil && a.Interval.Duration > 0 {
+			every = a.Interval.Duration
+		}
+		args = append(args, "--commitlog-interval="+every.String())
 	}
 	if b.ForcePathStyle {
 		args = append(args, "--path-style")
@@ -282,7 +304,7 @@ func agentContainer(dc *v1.CassandraRoomDatacenter, b *v1.S3Storage, image strin
 	if dc.Spec.TLS.Management != nil {
 		args = append(args, "--management-tls="+names.TLSDir+"/management")
 	}
-	var envs []corev1.EnvVar
+	envs := []corev1.EnvVar{env("POD_NAME", "metadata.name")}
 	if b.CredentialsSecret != nil {
 		ref := func(key string) *corev1.EnvVarSource {
 			return &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{

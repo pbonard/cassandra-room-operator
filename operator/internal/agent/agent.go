@@ -1,7 +1,9 @@
 // Package agent is the backup agent beside each node (Medusa's): it backs
 // the node up to the object store (a snapshot through the management API,
-// then the files no earlier backup uploaded) and restores it (downloads a
-// backup's files, then imports them).
+// then the files no earlier backup uploaded), uploads its archived commit
+// log, and restores it (downloads a backup's files, then imports them, or
+// loads another node's through it; then replays the commit log to a point
+// in time).
 package agent
 
 import (
@@ -17,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -63,6 +66,15 @@ type RestoreRequest struct {
 	Backup     string   `json:"backup"`
 	Pod        string   `json:"pod"`
 	Keyspaces  []string `json:"keyspaces,omitempty"`
+	// Load writes the files of the Sources' manifests (pods of Datacenter in
+	// Cluster, the backup's) through the node to their replicas, instead of
+	// importing the node's own: a restore into another topology or cluster.
+	Load        bool     `json:"load,omitempty"`
+	Sources     []string `json:"sources,omitempty"`
+	Consistency string   `json:"consistency,omitempty"`
+	// PointInTime, after the import, replays the node's archived commit log
+	// from the backup up to that time.
+	PointInTime *time.Time `json:"pointInTime,omitempty"`
 }
 
 // Agent runs a node's backups and restores.
@@ -72,8 +84,11 @@ type Agent struct {
 	MgmtAddr    string
 	DataDir     string
 	Concurrency int
+	// The node's place, for its commit log's objects.
+	Cluster, Datacenter, Pod string
 
 	mu       sync.Mutex
+	clMu     sync.Mutex // one commit log upload round at a time
 	backups  map[string]*Status
 	restores map[string]*restore
 }
@@ -82,6 +97,9 @@ type restore struct {
 	status Status
 	req    RestoreRequest
 	files  map[[2]string][]string // keyspace, table -> local files
+	// For a point in time: the downloaded segments and the tables they name.
+	segments []string
+	storage  map[string]string // storage id -> keyspace.table
 }
 
 // StartBackup starts the node's backup (or reports the one started).
@@ -138,20 +156,21 @@ func (a *Agent) runBackup(ctx context.Context, req BackupRequest, st *Status) er
 	}
 	a.update(st, func(s *Status) { s.HostID = node.HostID })
 	snapshot := "backup-" + req.Backup
+	snapshotAt := time.Now().UTC()
 	tables, err := a.Mgmt.Snapshot(ctx, a.MgmtAddr, snapshot, req.Keyspaces)
 	if err != nil {
 		return fmt.Errorf("snapshot: %w", err)
 	}
 	defer func() { _ = a.Mgmt.ClearSnapshot(context.Background(), a.MgmtAddr, snapshot) }()
 	m := catalog.Manifest{Cluster: req.Cluster, Datacenter: req.Datacenter, Backup: req.Backup, Pod: req.Pod,
-		HostID: node.HostID, Address: node.Address, CreatedAt: time.Now().UTC()}
+		HostID: node.HostID, Address: node.Address, CreatedAt: time.Now().UTC(), SnapshotAt: snapshotAt}
 	type item struct {
 		table, file int
 		path        string
 	}
 	var items []item
 	for ti, t := range tables {
-		m.Tables = append(m.Tables, catalog.Table{Keyspace: t.Keyspace, Table: t.Table, ID: t.ID, Files: make([]catalog.File, len(t.Files))})
+		m.Tables = append(m.Tables, catalog.Table{Keyspace: t.Keyspace, Table: t.Table, ID: t.ID, Storage: t.Storage, Files: make([]catalog.File, len(t.Files))})
 		for fi, p := range t.Files {
 			items = append(items, item{ti, fi, p})
 		}
@@ -301,9 +320,9 @@ func (a *Agent) download(r *restore) {
 
 func (a *Agent) runDownload(ctx context.Context, r *restore) error {
 	req := r.req
-	var m catalog.Manifest
-	if err := catalog.GetJSON(ctx, a.Store, catalog.ManifestKey(req.Cluster, req.Backup, req.Datacenter, req.Pod), &m); err != nil {
-		return fmt.Errorf("the manifest of %s: %w", req.Pod, err)
+	sources := []string{req.Pod}
+	if req.Load {
+		sources = req.Sources
 	}
 	dir := a.restoreDir(req.Backup)
 	if err := os.RemoveAll(dir); err != nil {
@@ -316,20 +335,59 @@ func (a *Agent) runDownload(ctx context.Context, r *restore) error {
 	}
 	var items []item
 	files := map[[2]string][]string{}
-	for _, t := range m.Tables {
-		if len(req.Keyspaces) > 0 && !slices.Contains(req.Keyspaces, t.Keyspace) {
-			continue
+	storage := map[string]string{}
+	var snapshotAt time.Time
+	for _, src := range sources {
+		var m catalog.Manifest
+		if err := catalog.GetJSON(ctx, a.Store, catalog.ManifestKey(req.Cluster, req.Backup, req.Datacenter, src), &m); err != nil {
+			return fmt.Errorf("the manifest of %s: %w", src, err)
 		}
-		k := [2]string{t.Keyspace, t.Table}
-		files[k] = []string{}
-		for _, f := range t.Files {
-			p := filepath.Join(dir, t.Keyspace, t.Table, f.Name)
-			items = append(items, item{k, f, p})
-			files[k] = append(files[k], p)
+		snapshotAt = m.SnapshotAt
+		if snapshotAt.IsZero() {
+			snapshotAt = m.CreatedAt
+		}
+		for _, t := range m.Tables {
+			if len(req.Keyspaces) > 0 && !slices.Contains(req.Keyspaces, t.Keyspace) {
+				continue
+			}
+			k := [2]string{t.Keyspace, t.Table}
+			if files[k] == nil {
+				files[k] = []string{}
+			}
+			if t.Storage != 0 {
+				storage[strconv.FormatUint(t.Storage, 10)] = t.Keyspace + "." + t.Table
+			}
+			for _, f := range t.Files {
+				p := filepath.Join(dir, src, t.Keyspace, t.Table, f.Name)
+				items = append(items, item{k, f, p})
+				files[k] = append(files[k], p)
+			}
+		}
+	}
+	var segments []catalog.Segment
+	if req.PointInTime != nil {
+		if req.Load {
+			return errors.New("a point in time needs the node's own backup")
+		}
+		if len(storage) == 0 && len(files) > 0 {
+			return errors.New("the backup predates commit log archiving (no storage ids)")
+		}
+		// Upload what the node has not yet, then pick the rounds.
+		if err := a.ArchiveCommitLog(ctx); err != nil {
+			return fmt.Errorf("archiving the commit log: %w", err)
+		}
+		all, err := catalog.CommitLog(ctx, a.Store, req.Cluster, req.Datacenter, req.Pod)
+		if err != nil {
+			return err
+		}
+		var ok bool
+		segments, ok = catalog.SegmentsFor(all, snapshotAt, *req.PointInTime)
+		if !ok {
+			return fmt.Errorf("the archived commit log does not reach %s", req.PointInTime.UTC().Format(time.RFC3339))
 		}
 	}
 	a.mu.Lock()
-	r.status.Files = len(items)
+	r.status.Files = len(items) + len(segments)
 	for _, it := range items {
 		r.status.Bytes += it.f.Size
 	}
@@ -350,10 +408,97 @@ func (a *Agent) runDownload(ctx context.Context, r *restore) error {
 	if err != nil {
 		return err
 	}
+	var segFiles []string
+	for _, sg := range segments {
+		// The segment keeps its name: its number is part of its records.
+		p := filepath.Join(dir, "commitlog", fmt.Sprintf("%06d", len(segFiles)), sg.Name)
+		n, err := a.fetchObject(ctx, sg.Key, p)
+		if err != nil {
+			return err
+		}
+		a.mu.Lock()
+		r.status.Bytes += n
+		r.status.Transferred += n
+		a.mu.Unlock()
+		segFiles = append(segFiles, p)
+	}
 	a.mu.Lock()
-	r.files = files
+	r.files, r.segments, r.storage = files, segFiles, storage
 	a.mu.Unlock()
 	return nil
+}
+
+// fetchObject downloads an object to a file.
+func (a *Agent) fetchObject(ctx context.Context, key, p string) (int64, error) {
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return 0, err
+	}
+	rc, err := a.Store.Get(ctx, key)
+	if err != nil {
+		return 0, fmt.Errorf("downloading %s: %w", key, err)
+	}
+	defer rc.Close()
+	out, err := os.Create(p)
+	if err != nil {
+		return 0, err
+	}
+	n, err := io.Copy(out, rc)
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	return n, err
+}
+
+// ArchiveCommitLog runs an upload round of the node's commit log: the
+// node closes its segment, then every archived segment is uploaded and
+// removed from the node.
+func (a *Agent) ArchiveCommitLog(ctx context.Context) error {
+	a.clMu.Lock()
+	defer a.clMu.Unlock()
+	at := time.Now()
+	files, err := a.Mgmt.ArchiveCommitLog(ctx, a.MgmtAddr)
+	if err != nil {
+		return err
+	}
+	for _, f := range files {
+		local := f
+		if !filepath.IsAbs(local) {
+			local = filepath.Join(a.DataDir, f)
+		}
+		st, err := os.Stat(local)
+		if err != nil {
+			return err
+		}
+		in, err := os.Open(local)
+		if err != nil {
+			return err
+		}
+		err = a.Store.Put(ctx, catalog.CommitLogKey(a.Cluster, a.Datacenter, a.Pod, at, filepath.Base(f)), in, st.Size())
+		in.Close()
+		if err != nil {
+			return fmt.Errorf("uploading %s: %w", f, err)
+		}
+		if err := os.Remove(local); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ArchiveCommitLogEvery runs upload rounds until ctx is done.
+func (a *Agent) ArchiveCommitLogEvery(ctx context.Context, every time.Duration) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := a.ArchiveCommitLog(ctx); err != nil {
+				log.Printf("commit log: %v", err)
+			}
+		}
+	}
 }
 
 // fetch downloads a file and checks its content.
@@ -400,10 +545,10 @@ func (a *Agent) Import(backup string) error {
 		return fmt.Errorf("restore %q is %s", backup, r.status.Phase)
 	}
 	r.status.Phase = Importing
-	files := r.files
+	rr := *r
 	a.mu.Unlock()
 	go func() {
-		err := a.runImport(files)
+		err := a.runImport(&rr)
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		if err != nil {
@@ -416,7 +561,9 @@ func (a *Agent) Import(backup string) error {
 	return nil
 }
 
-func (a *Agent) runImport(files map[[2]string][]string) error {
+func (a *Agent) runImport(r *restore) error {
+	ctx := context.Background()
+	files := r.files
 	keys := make([][2]string, 0, len(files))
 	for k := range files {
 		keys = append(keys, k)
@@ -426,8 +573,21 @@ func (a *Agent) runImport(files map[[2]string][]string) error {
 		if len(files[k]) == 0 {
 			continue
 		}
-		if err := a.Mgmt.Import(context.Background(), a.MgmtAddr, k[0], k[1], files[k]); err != nil {
+		if r.req.Load {
+			if _, err := a.Mgmt.Load(ctx, a.MgmtAddr, k[0], k[1], files[k], r.req.Consistency); err != nil {
+				return fmt.Errorf("loading %s.%s: %w", k[0], k[1], err)
+			}
+			continue
+		}
+		if err := a.Mgmt.Import(ctx, a.MgmtAddr, k[0], k[1], files[k]); err != nil {
 			return fmt.Errorf("importing %s.%s: %w", k[0], k[1], err)
+		}
+	}
+	if r.req.PointInTime != nil && len(r.segments) > 0 {
+		_, err := a.Mgmt.ReplayCommitLog(ctx, a.MgmtAddr, mgmt.ReplayRequest{Files: r.segments, Tables: r.storage,
+			Until: r.req.PointInTime.UnixMicro()})
+		if err != nil {
+			return fmt.Errorf("replaying the commit log: %w", err)
 		}
 	}
 	return nil

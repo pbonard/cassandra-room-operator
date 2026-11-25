@@ -54,9 +54,14 @@ spec:
             description: CassandraRoomRestoreSpec restores a backup into a cluster.
             properties:
               backup:
-                description: Backup is the CassandraRoomBackup's name.
+                description: |-
+                  Backup is the CassandraRoomBackup's name or, with SourceCluster, the
+                  backup's name in the object store.
                 type: string
               cluster:
+                type: string
+              consistency:
+                description: Consistency of Load's writes (default ALL).
                 type: string
               keyspaces:
                 description: 'Keyspaces to restore (default: every keyspace of the
@@ -64,6 +69,33 @@ spec:
                 items:
                   type: string
                 type: array
+              mode:
+                description: Mode is Import (default) or Load.
+                enum:
+                - Import
+                - Load
+                type: string
+              pointInTime:
+                description: |-
+                  PointInTime restores the cluster as it was at this time: the backup,
+                  then each node's archived commit log up to it, leaving out what was
+                  written later (by write timestamp). Import only; the backup must be
+                  the last one before it, and the data centers' backup storage must
+                  archive commit logs.
+                format: date-time
+                type: string
+              sourceCluster:
+                description: |-
+                  SourceCluster restores a backup of another cluster (its name in the
+                  object store, which must be the same bucket): Load only. The tables
+                  must exist (create the schema first).
+                type: string
+              sourceDatacenter:
+                description: |-
+                  SourceDatacenter is the backup's data center that Load reads
+                  (default: its first). Each data center holds every row it
+                  replicates, so one suffices when it replicates every keyspace.
+                type: string
             required:
             - backup
             - cluster

@@ -167,17 +167,42 @@ records it).
 - **Schedules:** a `CassandraRoomBackupSchedule` creates backups by cron and
   deletes the oldest beyond `keep`.
 
-A `CassandraRoomRestore` restores a backup into the cluster it was taken from
-(the same data centers and pods, as Medusa requires):
+A `CassandraRoomRestore` restores a backup. The first data center truncates
+the backup's tables, which gives them new, empty storage on every node;
+then, by `mode`:
 
-1. every node's agent downloads its files and checks them against their
-   hashes;
-2. the first data center truncates the backup's tables, which gives them new,
-   empty storage on every node;
-3. every node imports its own files.
+- **Import** (the default; the cluster the backup was taken from, with the
+  same data centers and pods, as Medusa requires): every node's agent
+  downloads its own files, checks them against their hashes, and imports
+  them.
+- **Load** (any topology: more or fewer nodes, other tokens or replication,
+  or another cluster with `sourceCluster`, its name in the same bucket):
+  the first data center's nodes share out one data center's files of the
+  backup (`sourceDatacenter`, default its first) and write them through
+  themselves as coordinators, to the replicas that own each partition now
+  (sstableloader), at `consistency` (default `ALL`). Timestamps and
+  deletions are kept. The tables must exist: create the schema first.
 
 Writes to the restored tables meanwhile are lost, so stop writing to them
 first.
+
+### Point in time
+
+With `backup.commitLogArchive`, each node keeps every commit log segment
+(`-commitlog-archive-dir`, hard links on its volume) and its agent uploads
+them every `interval` (default 1m) to
+`<cluster>/commitlog/<dc>/<pod>/<round>-<segment>`, then deletes them
+locally. Each upload round first closes the node's current segment, so a
+round holds every write acknowledged before it.
+
+A restore with `pointInTime` (Import only) imports the last backup before
+that time, then each node replays its segments from the backup's snapshot
+up to the first round after the point in time, leaving out cells and
+deletions written later (by write timestamp, as Cassandra's
+`restore_point_in_time` does). Writes are matched to tables by the storage
+ids the backup recorded, so rows truncated before the backup do not come
+back. Deleting backups prunes the segments older than the oldest backup
+kept.
 
 Storage: `backup.bucket`, `prefix`, `region`, `endpoint` with
 `forcePathStyle` for MinIO and similar stores, and `credentialsSecret`
@@ -201,9 +226,17 @@ make test                 # unit and envtest tests (setup-envtest)
 - **`internal/samples`:** creates every sample on the API server, which
   validates them against the CRDs.
 
+## Metrics
+
+Every node serves Prometheus metrics on its management API (`/metrics`:
+client request latencies and errors by kind and consistency level, table
+sizes, compactions, hints, dropped messages, thread pools, nodes up and down,
+Accord). The pods carry the `prometheus.io/scrape`, `port`, `path` and
+`scheme` annotations; with the Prometheus operator, a PodMonitor selecting
+`app.kubernetes.io/name: cassandra-room` on the `management` port does the
+same. The operator exposes controller-runtime's metrics.
+
 ## Not done
 
-- Point-in-time restores, restores into another cluster or topology, and
-  backups to GCS or Azure.
-- Metrics of the nodes. cassandra-room has no Prometheus endpoint yet; the
-  operator exposes controller-runtime's.
+See [`docs/gap-analysis.md`](docs/gap-analysis.md) for a comparison with
+k8ssandra-operator and cass-operator, and what remains.

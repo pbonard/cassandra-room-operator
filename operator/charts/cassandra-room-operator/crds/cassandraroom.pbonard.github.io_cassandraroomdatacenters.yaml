@@ -79,6 +79,18 @@ spec:
                 properties:
                   bucket:
                     type: string
+                  commitLogArchive:
+                    description: |-
+                      CommitLogArchive keeps every node's commit log in the store too, so
+                      that a restore can reach any point in time since the oldest backup.
+                    properties:
+                      interval:
+                        description: |-
+                          Interval between upload rounds (default 1m). Each round closes the
+                          node's commit log segment first; a point in time can be restored once
+                          a round passed it.
+                        type: string
+                    type: object
                   concurrency:
                     description: |-
                       Concurrency is the number of files a node uploads or downloads at

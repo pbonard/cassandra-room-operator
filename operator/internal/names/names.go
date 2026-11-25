@@ -34,13 +34,16 @@ const (
 	ManagementPort = 7199
 	AgentPort      = 8090
 
-	DataDir     = "/var/lib/cassandra-room"
-	ConfigDir   = "/etc/cassandra-room"
-	FlagsFile   = ConfigDir + "/flags"
-	TLSDir      = "/etc/cassandra-room-tls"
-	DataVolume  = "data"
-	ConfigVol   = "node-config"
-	MaxSeedsPer = 3 // seeds of a data center
+	DataDir = "/var/lib/cassandra-room"
+	// CommitLogArchive is where nodes archive commit log segments, relative
+	// to DataDir (the same volume: segments are hard-linked).
+	CommitLogArchive = "commitlog-archive"
+	ConfigDir        = "/etc/cassandra-room"
+	FlagsFile        = ConfigDir + "/flags"
+	TLSDir           = "/etc/cassandra-room-tls"
+	DataVolume       = "data"
+	ConfigVol        = "node-config"
+	MaxSeedsPer      = 3 // seeds of a data center
 )
 
 // DCResource names the data center object's resources:

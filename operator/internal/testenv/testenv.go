@@ -235,6 +235,18 @@ func (f *FakeCluster) Import(ctx context.Context, addr, keyspace, table string, 
 	return errors.New("not supported by the fake")
 }
 
+func (f *FakeCluster) Load(ctx context.Context, addr, keyspace, table string, files []string, consistency string) (mgmt.LoadResult, error) {
+	return mgmt.LoadResult{}, errors.New("not supported by the fake")
+}
+
+func (f *FakeCluster) ArchiveCommitLog(ctx context.Context, addr string) ([]string, error) {
+	return nil, errors.New("not supported by the fake")
+}
+
+func (f *FakeCluster) ReplayCommitLog(ctx context.Context, addr string, req mgmt.ReplayRequest) (mgmt.ReplayResult, error) {
+	return mgmt.ReplayResult{}, errors.New("not supported by the fake")
+}
+
 // RepairsDone returns the repairs run so far.
 func (f *FakeCluster) RepairsDone() []mgmt.RepairRequest {
 	f.mu.Lock()

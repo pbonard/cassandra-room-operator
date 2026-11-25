@@ -185,6 +185,10 @@ func runAgent(args []string) error {
 	fs.StringVar(&o.Endpoint, "endpoint", "", "Endpoint of an S3-compatible store")
 	fs.BoolVar(&o.PathStyle, "path-style", false, "Address buckets by path")
 	concurrency := fs.Int("concurrency", 4, "Files transferred at once")
+	cluster := fs.String("cluster", "", "The node's cluster (for its commit log's objects)")
+	datacenter := fs.String("datacenter", "", "The node's data center")
+	pod := fs.String("pod", os.Getenv("POD_NAME"), "The node's pod (default: $POD_NAME)")
+	commitLogEvery := fs.Duration("commitlog-interval", 0, "Upload the node's archived commit log this often (0: never)")
 	_ = fs.Parse(args)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -201,7 +205,14 @@ func runAgent(args []string) error {
 		}
 		cl = mgmt.New(cfg)
 	}
-	a := &agent.Agent{Store: store, Mgmt: cl, MgmtAddr: *management, DataDir: *dataDir, Concurrency: *concurrency}
+	a := &agent.Agent{Store: store, Mgmt: cl, MgmtAddr: *management, DataDir: *dataDir, Concurrency: *concurrency,
+		Cluster: *cluster, Datacenter: *datacenter, Pod: *pod}
+	if *commitLogEvery > 0 {
+		if *cluster == "" || *datacenter == "" || *pod == "" {
+			return fmt.Errorf("--commitlog-interval needs --cluster, --datacenter and --pod")
+		}
+		go a.ArchiveCommitLogEvery(ctx, *commitLogEvery)
+	}
 	srv := &http.Server{Addr: *listen, Handler: a.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		<-ctx.Done()

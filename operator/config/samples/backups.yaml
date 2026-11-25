@@ -1,4 +1,5 @@
-# A backup now, a nightly schedule keeping a week, and a restore.
+# A backup now, a nightly schedule keeping a week, and restores: as it was,
+# to a point in time, and into another cluster of another size.
 apiVersion: cassandraroom.pbonard.github.io/v1alpha1
 kind: CassandraRoomBackup
 metadata:
@@ -23,3 +24,26 @@ spec:
   cluster: prod
   backup: before-migration
   keyspaces: [app]
+---
+# The cluster as it was at 14:05 (needs backup.commitLogArchive).
+apiVersion: cassandraroom.pbonard.github.io/v1alpha1
+kind: CassandraRoomRestore
+metadata:
+  name: restore-to-1405
+spec:
+  cluster: prod
+  backup: before-migration
+  pointInTime: "2026-11-25T14:05:00Z"
+---
+# prod's backup into staging (any number of nodes): staging's first data
+# center loads it to the replicas. Create the schema in staging first.
+apiVersion: cassandraroom.pbonard.github.io/v1alpha1
+kind: CassandraRoomRestore
+metadata:
+  name: prod-into-staging
+spec:
+  cluster: staging
+  mode: Load
+  sourceCluster: prod
+  backup: before-migration
+  consistency: LOCAL_QUORUM
