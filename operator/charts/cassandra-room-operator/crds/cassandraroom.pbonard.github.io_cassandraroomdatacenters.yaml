@@ -1,0 +1,579 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.3
+  name: cassandraroomdatacenters.cassandraroom.pbonard.github.io
+spec:
+  group: cassandraroom.pbonard.github.io
+  names:
+    kind: CassandraRoomDatacenter
+    listKind: CassandraRoomDatacenterList
+    plural: cassandraroomdatacenters
+    shortNames:
+    - crdc
+    singular: cassandraroomdatacenter
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.clusterName
+      name: Cluster
+      type: string
+    - jsonPath: .spec.size
+      name: Size
+      type: integer
+    - jsonPath: .status.readyNodes
+      name: Ready
+      type: integer
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: CassandraRoomDatacenter is a data center of a cassandra-room
+          cluster.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              CassandraRoomDatacenterSpec is one data center of a cluster, in the
+              Kubernetes cluster that runs it (cass-operator's CassandraDatacenter).
+              A CassandraRoomCluster creates and updates them; one can also be created
+              on its own, for a cluster of a single data center.
+            properties:
+              additionalSeeds:
+                description: |-
+                  AdditionalSeeds are internode addresses of other data centers'
+                  seeds ("host:port").
+                items:
+                  type: string
+                type: array
+              agentImage:
+                description: |-
+                  AgentImage is the operator's image, which initialises nodes and
+                  runs the backup agent (default: the operator's own).
+                type: string
+              backup:
+                description: Backup configures the backup agent run beside each node.
+                properties:
+                  bucket:
+                    type: string
+                  concurrency:
+                    description: |-
+                      Concurrency is the number of files a node uploads or downloads at
+                      once (default 4).
+                    format: int32
+                    type: integer
+                  credentialsSecret:
+                    description: |-
+                      CredentialsSecret holds access_key_id and secret_access_key; without
+                      it, the default AWS credential chain (IRSA, instance role) applies.
+                    properties:
+                      secretName:
+                        type: string
+                    required:
+                    - secretName
+                    type: object
+                  endpoint:
+                    description: Endpoint of an S3-compatible store (MinIO...); empty
+                      for AWS.
+                    type: string
+                  forcePathStyle:
+                    description: ForcePathStyle addresses buckets by path (MinIO).
+                    type: boolean
+                  prefix:
+                    description: 'Prefix of the objects (default: none).'
+                    type: string
+                  region:
+                    type: string
+                required:
+                - bucket
+                type: object
+              clusterName:
+                description: ClusterName is the cassandra-room cluster's name (cluster_name).
+                type: string
+              cmsMembers:
+                description: |-
+                  CMSMembers, when set, are the metadata service's members the
+                  operator maintains (internode addresses). The CassandraRoomCluster
+                  sets it on one data center only.
+                items:
+                  type: string
+                type: array
+              config:
+                description: |-
+                  ServerConfig is the configuration of cassandra-room nodes (what
+                  cassandra.yaml holds for Cassandra), passed to the server as flags.
+                properties:
+                  authorizer:
+                    description: |-
+                      Authorizer is AllowAllAuthorizer or CassandraAuthorizer (the
+                      default). The authenticator is always PasswordAuthenticator.
+                    enum:
+                    - AllowAllAuthorizer
+                    - CassandraAuthorizer
+                    type: string
+                  commitlogSync:
+                    description: CommitlogSync is "periodic" (the default) or "batch".
+                    enum:
+                    - periodic
+                    - batch
+                    type: string
+                  commitlogSyncPeriod:
+                    description: CommitlogSyncPeriod is the fsync period in periodic
+                      mode ("10s").
+                    type: string
+                  extraArgs:
+                    description: |-
+                      ExtraArgs are further server flags ("-name=value"), after the
+                      operator's.
+                    items:
+                      type: string
+                    type: array
+                  memtableSpace:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: |-
+                      MemtableSpace bounds the memtables of all tables
+                      (memtable_heap_space).
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  numTokens:
+                    description: NumTokens is the number of vnodes of each node (num_tokens).
+                    format: int32
+                    type: integer
+                type: object
+              datacenterName:
+                description: |-
+                  DatacenterName is the data center's name in cassandra-room (default:
+                  the object's name).
+                type: string
+              image:
+                description: Image of cassandra-room.
+                type: string
+              imagePullPolicy:
+                type: string
+              imagePullSecrets:
+                items:
+                  description: SecretRef names a secret.
+                  properties:
+                    secretName:
+                      type: string
+                  required:
+                  - secretName
+                  type: object
+                type: array
+              manageCMS:
+                description: |-
+                  ManageCMS makes this data center choose and maintain the metadata
+                  service's members itself: up to three of its seeds (a cluster of
+                  one data center).
+                type: boolean
+              managementPort:
+                description: ManagementPort is the management API's port (default
+                  7199).
+                format: int32
+                type: integer
+              networking:
+                description: NetworkingSpec configures addresses.
+                properties:
+                  loadBalancerAnnotations:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      LoadBalancerAnnotations are put on the per-node Services
+                      (LoadBalancer mode), for instance to make them internal.
+                    type: object
+                  mode:
+                    description: Mode is PodIP (the default), HostNetwork or LoadBalancer.
+                    enum:
+                    - PodIP
+                    - HostNetwork
+                    - LoadBalancer
+                    type: string
+                  preferLocal:
+                    description: |-
+                      PreferLocal makes nodes of a data center connect to each other at
+                      their pod addresses (with HostNetwork or LoadBalancer).
+                    type: boolean
+                type: object
+              pod:
+                description: PodOptions are scheduling and resource settings of the
+                  nodes' pods.
+                properties:
+                  allowMultipleNodesPerWorker:
+                    description: |-
+                      AllowMultipleNodesPerWorker lets two cassandra-room nodes share a
+                      Kubernetes node (by default they repel each other).
+                    type: boolean
+                  nodeSelector:
+                    additionalProperties:
+                      type: string
+                    type: object
+                  resources:
+                    description: ResourceRequirements describes the compute resource
+                      requirements.
+                    properties:
+                      claims:
+                        description: |-
+                          Claims lists the names of resources, defined in spec.resourceClaims,
+                          that are used by this container.
+
+                          This is an alpha field and requires enabling the
+                          DynamicResourceAllocation feature gate.
+
+                          This field is immutable. It can only be set for containers.
+                        items:
+                          description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                          properties:
+                            name:
+                              description: |-
+                                Name must match the name of one entry in pod.spec.resourceClaims of
+                                the Pod where this field is used. It makes that resource available
+                                inside a container.
+                              type: string
+                            request:
+                              description: |-
+                                Request is the name chosen for a request in the referenced claim.
+                                If empty, everything from the claim is made available, otherwise
+                                only the result of this request.
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                      limits:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Limits describes the maximum amount of compute resources allowed.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                      requests:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Requests describes the minimum amount of compute resources required.
+                          If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                          otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                    type: object
+                  serviceAccountName:
+                    description: |-
+                      ServiceAccountName runs the pods as this service account (default:
+                      one the operator creates).
+                    type: string
+                  tolerations:
+                    items:
+                      description: |-
+                        The pod this Toleration is attached to tolerates any taint that matches
+                        the triple <key,value,effect> using the matching operator <operator>.
+                      properties:
+                        effect:
+                          description: |-
+                            Effect indicates the taint effect to match. Empty means match all taint effects.
+                            When specified, allowed values are NoSchedule, PreferNoSchedule and NoExecute.
+                          type: string
+                        key:
+                          description: |-
+                            Key is the taint key that the toleration applies to. Empty means match all taint keys.
+                            If the key is empty, operator must be Exists; this combination means to match all values and all keys.
+                          type: string
+                        operator:
+                          description: |-
+                            Operator represents a key's relationship to the value.
+                            Valid operators are Exists and Equal. Defaults to Equal.
+                            Exists is equivalent to wildcard for value, so that a pod can
+                            tolerate all taints of a particular category.
+                          type: string
+                        tolerationSeconds:
+                          description: |-
+                            TolerationSeconds represents the period of time the toleration (which must be
+                            of effect NoExecute, otherwise this field is ignored) tolerates the taint. By default,
+                            it is not set, which means tolerate the taint forever (do not evict). Zero and
+                            negative values will be treated as 0 (evict immediately) by the system.
+                          format: int64
+                          type: integer
+                        value:
+                          description: |-
+                            Value is the taint value the toleration matches to.
+                            If the operator is Exists, the value should be empty, otherwise just a regular string.
+                          type: string
+                      type: object
+                    type: array
+                type: object
+              racks:
+                description: 'Racks spread the nodes (default: one rack, "rack1").'
+                items:
+                  description: |-
+                    Rack is a failure domain of a data center: its nodes are spread evenly
+                    over the racks, and replicas over racks.
+                  properties:
+                    name:
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    nodeAffinityLabels:
+                      additionalProperties:
+                        type: string
+                      description: |-
+                        NodeAffinityLabels place the rack's pods on nodes with these labels
+                        (for instance a zone).
+                      type: object
+                  required:
+                  - name
+                  type: object
+                type: array
+              replaceNodes:
+                description: |-
+                  ReplaceNodes are pods whose node is dead and lost its data: each is
+                  recreated empty and takes the dead node's place (replace_address).
+                items:
+                  type: string
+                type: array
+              rollingRestartRequestedAt:
+                description: |-
+                  RollingRestartRequestedAt restarts the nodes, one rack at a time, when
+                  it changes (any value, typically a time).
+                type: string
+              size:
+                description: Size is the number of nodes.
+                format: int32
+                minimum: 0
+                type: integer
+              stopped:
+                description: Stopped scales the data center to no pods, keeping its
+                  volumes.
+                type: boolean
+              storage:
+                description: StorageSpec is each node's data volume.
+                properties:
+                  size:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: Size of the volume (default 10Gi).
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  storageClassName:
+                    type: string
+                type: object
+              superuserSecret:
+                description: |-
+                  SuperuserSecret holds the username and password of the superuser the
+                  operator creates and uses (default: <cluster>-superuser, created
+                  with a random password).
+                type: string
+              tls:
+                description: |-
+                  TLSSpec configures encryption, from secrets of type kubernetes.io/tls
+                  holding tls.crt, tls.key and ca.crt (as cert-manager writes them). In
+                  a multi-cluster deployment, each secret must exist in every cluster.
+                properties:
+                  client:
+                    description: Client encrypts the native protocol port.
+                    properties:
+                      optional:
+                        description: Optional also accepts unencrypted clients on
+                          the same port.
+                        type: boolean
+                      requireClientAuth:
+                        description: |-
+                          RequireClientAuth requires client certificates signed by the
+                          secret's ca.crt.
+                        type: boolean
+                      secretName:
+                        type: string
+                    required:
+                    - secretName
+                    type: object
+                  internode:
+                    description: |-
+                      Internode encrypts the connections between nodes, mutually
+                      authenticated.
+                    properties:
+                      secretName:
+                        type: string
+                      verifyHostname:
+                        description: |-
+                          VerifyHostname also checks peers' certificate names
+                          (require_endpoint_verification).
+                        type: boolean
+                    required:
+                    - secretName
+                    type: object
+                  management:
+                    description: |-
+                      Management encrypts the management API; the operator and the
+                      backup agent present the same secret's certificate.
+                    properties:
+                      secretName:
+                        type: string
+                    required:
+                    - secretName
+                    type: object
+                type: object
+            required:
+            - clusterName
+            - image
+            - size
+            type: object
+          status:
+            description: CassandraRoomDatacenterStatus is the observed state of a
+              data center.
+            properties:
+              cmsMembers:
+                description: CMSMembers are the metadata service's members, as last
+                  seen.
+                items:
+                  type: string
+                type: array
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              lastRollingRestart:
+                description: LastRollingRestart is the RollingRestartRequestedAt last
+                  done.
+                type: string
+              nodes:
+                items:
+                  description: NodeState is what the operator knows of a node.
+                  properties:
+                    address:
+                      type: string
+                    hostId:
+                      type: string
+                    pod:
+                      type: string
+                    rack:
+                      type: string
+                    ready:
+                      type: boolean
+                    status:
+                      description: 'Status in the ring: NORMAL, JOINING, LEAVING,
+                        LEFT.'
+                      type: string
+                  required:
+                  - pod
+                  - rack
+                  - ready
+                  type: object
+                type: array
+              observedGeneration:
+                format: int64
+                type: integer
+              phase:
+                description: DatacenterPhase is a data center's state.
+                type: string
+              readyNodes:
+                description: ReadyNodes counts nodes in the ring and serving clients.
+                format: int32
+                type: integer
+              replacedNodes:
+                additionalProperties:
+                  type: string
+                description: ReplacedNodes maps pods being replaced to the host id
+                  they replace.
+                type: object
+              seedAddresses:
+                description: |-
+                  SeedAddresses are the internode addresses of this data center's
+                  seeds, for the other data centers.
+                items:
+                  type: string
+                type: array
+              superuserCreated:
+                description: SuperuserCreated is set once the superuser role exists.
+                type: boolean
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

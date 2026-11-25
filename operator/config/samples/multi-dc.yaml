@@ -1,0 +1,60 @@
+# Nine nodes in three data centers, each in its own Kubernetes cluster.
+# The control plane runs in the cluster of "west"; "central" and "east" are
+# reached through ClientConfigs (kubeconfig secrets), and each of those
+# clusters runs the operator too (manager --control-plane=false).
+# Nodes reach the other clusters' nodes at their LoadBalancer addresses, and
+# each other at their pod addresses within a data center (preferLocal).
+apiVersion: cassandraroom.pbonard.github.io/v1alpha1
+kind: ClientConfig
+metadata:
+  name: central
+spec:
+  kubeConfigSecret: {secretName: central-kubeconfig}
+---
+apiVersion: cassandraroom.pbonard.github.io/v1alpha1
+kind: ClientConfig
+metadata:
+  name: east
+spec:
+  kubeConfigSecret: {secretName: east-kubeconfig}
+---
+apiVersion: cassandraroom.pbonard.github.io/v1alpha1
+kind: CassandraRoomCluster
+metadata:
+  name: prod
+spec:
+  image: ghcr.io/pbonard/cassandra-room:latest
+  networking:
+    mode: LoadBalancer
+    preferLocal: true
+    loadBalancerAnnotations:
+      service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+  tls:
+    internode: {secretName: prod-internode-tls}
+    client: {secretName: prod-client-tls}
+  config:
+    numTokens: 16
+  backup:
+    bucket: prod-cassandra-room-backups
+    region: us-east-1
+  repairs:
+  - name: weekly
+    spec:
+      schedule: "0 2 * * 6"
+      segmentsPerNode: 16
+      intensity: "0.5"
+  datacenters:
+  - name: west
+    size: 3
+    racks: [{name: a}, {name: b}, {name: c}]
+    storage: {size: 200Gi}
+  - name: central
+    k8sContext: central
+    size: 3
+    racks: [{name: a}, {name: b}, {name: c}]
+    storage: {size: 200Gi}
+  - name: east
+    k8sContext: east
+    size: 3
+    racks: [{name: a}, {name: b}, {name: c}]
+    storage: {size: 200Gi}

@@ -1,0 +1,17 @@
+image:
+  repository: ghcr.io/pbonard/cassandra-room-operator
+  tag: latest
+  pullPolicy: IfNotPresent
+# controlPlane runs CassandraRoomClusters, cluster backups and restores; a
+# Kubernetes cluster that only runs data centers managed from elsewhere
+# sets it to false.
+controlPlane: true
+dataPlane: true
+# watchNamespace limits the operator to one namespace (default: all).
+watchNamespace: ""
+replicas: 1
+resources:
+  requests: {cpu: 100m, memory: 128Mi}
+  limits: {memory: 512Mi}
+nodeSelector: {}
+tolerations: []

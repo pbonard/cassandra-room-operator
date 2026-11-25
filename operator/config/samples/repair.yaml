@@ -1,0 +1,13 @@
+# A repair schedule of a data center (the cluster's spec.repairs creates
+# these on its first data center).
+apiVersion: cassandraroom.pbonard.github.io/v1alpha1
+kind: RepairSchedule
+metadata:
+  name: app-daily
+spec:
+  datacenter: prod-west
+  keyspaces: [app]
+  schedule: "@daily"
+  segmentsPerNode: 8
+  intensity: "0.8"
+  parallelism: 1

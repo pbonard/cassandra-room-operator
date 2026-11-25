@@ -1,0 +1,10 @@
+resources:
+- bases/cassandraroom.pbonard.github.io_cassandraroomclusters.yaml
+- bases/cassandraroom.pbonard.github.io_cassandraroomdatacenters.yaml
+- bases/cassandraroom.pbonard.github.io_clientconfigs.yaml
+- bases/cassandraroom.pbonard.github.io_repairschedules.yaml
+- bases/cassandraroom.pbonard.github.io_cassandraroombackups.yaml
+- bases/cassandraroom.pbonard.github.io_cassandraroombackupschedules.yaml
+- bases/cassandraroom.pbonard.github.io_cassandraroomrestores.yaml
+- bases/cassandraroom.pbonard.github.io_datacenterbackups.yaml
+- bases/cassandraroom.pbonard.github.io_datacenterrestores.yaml

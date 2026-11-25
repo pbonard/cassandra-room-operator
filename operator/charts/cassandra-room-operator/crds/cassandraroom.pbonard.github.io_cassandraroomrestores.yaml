@@ -1,0 +1,117 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.3
+  name: cassandraroomrestores.cassandraroom.pbonard.github.io
+spec:
+  group: cassandraroom.pbonard.github.io
+  names:
+    kind: CassandraRoomRestore
+    listKind: CassandraRoomRestoreList
+    plural: cassandraroomrestores
+    shortNames:
+    - crrestore
+    singular: cassandraroomrestore
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.cluster
+      name: Cluster
+      type: string
+    - jsonPath: .spec.backup
+      name: Backup
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          CassandraRoomRestore restores a backup into a cluster. Clients should not
+          write to the restored tables meanwhile.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: CassandraRoomRestoreSpec restores a backup into a cluster.
+            properties:
+              backup:
+                description: Backup is the CassandraRoomBackup's name.
+                type: string
+              cluster:
+                type: string
+              keyspaces:
+                description: 'Keyspaces to restore (default: every keyspace of the
+                  backup).'
+                items:
+                  type: string
+                type: array
+            required:
+            - backup
+            - cluster
+            type: object
+          status:
+            description: CassandraRoomRestoreStatus is a cluster restore's state.
+            properties:
+              datacenters:
+                items:
+                  description: |-
+                    DatacenterProgress is a data center's part of a cluster-wide backup or
+                    restore.
+                  properties:
+                    bytes:
+                      format: int64
+                      type: integer
+                    done:
+                      format: int32
+                      type: integer
+                    name:
+                      type: string
+                    nodes:
+                      format: int32
+                      type: integer
+                    phase:
+                      description: BackupPhase is a backup's or restore's state.
+                      type: string
+                  required:
+                  - bytes
+                  - done
+                  - name
+                  - nodes
+                  type: object
+                type: array
+              finishedAt:
+                format: date-time
+                type: string
+              message:
+                type: string
+              phase:
+                description: BackupPhase is a backup's or restore's state.
+                type: string
+              startedAt:
+                format: date-time
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
