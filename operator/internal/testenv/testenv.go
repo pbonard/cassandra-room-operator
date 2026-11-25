@@ -81,11 +81,13 @@ type FakeCluster struct {
 	repairErr error
 	snapshots map[string][]mgmt.SnapshotTable
 	imports   []string
+	roles     *fakeRoles
 }
 
 func NewFakeCluster() *FakeCluster {
 	return &FakeCluster{nodes: map[string]*fakeNode{}, joinIn: 300 * time.Millisecond, hold: map[string]bool{},
-		byPod: map[string]string{}, podIPs: map[string]string{}, snapshots: map[string][]mgmt.SnapshotTable{}}
+		byPod: map[string]string{}, podIPs: map[string]string{}, snapshots: map[string][]mgmt.SnapshotTable{},
+		roles: &fakeRoles{}}
 }
 
 func (f *FakeCluster) node(addr string) (*fakeNode, error) {
@@ -408,8 +410,10 @@ func (f *FakeCluster) updatePod(ctx context.Context, c client.Client, pod *corev
 
 // fakeRoles records superuser setups.
 type fakeRoles struct {
-	mu    sync.Mutex
-	users []string
+	mu         sync.Mutex
+	users      []string
+	truncated  []string
+	onTruncate func([]string)
 }
 
 func (r *fakeRoles) EnsureSuperuser(ctx context.Context, c dc.Conn, user, password string) error {
@@ -421,6 +425,33 @@ func (r *fakeRoles) EnsureSuperuser(ctx context.Context, c dc.Conn, user, passwo
 	r.users = append(r.users, user)
 	return nil
 }
+
+func (r *fakeRoles) Truncate(ctx context.Context, c dc.Conn, user, password string, tables []string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.truncated = append(r.truncated, tables...)
+	if r.onTruncate != nil {
+		r.onTruncate(tables)
+	}
+	return nil
+}
+
+// Truncated returns the tables truncated so far.
+func (f *FakeCluster) Truncated() []string {
+	f.roles.mu.Lock()
+	defer f.roles.mu.Unlock()
+	return slices.Clone(f.roles.truncated)
+}
+
+// OnTruncate calls fn when tables are truncated.
+func (f *FakeCluster) OnTruncate(fn func([]string)) {
+	f.roles.mu.Lock()
+	f.roles.onTruncate = fn
+	f.roles.mu.Unlock()
+}
+
+// Roles is the fake CQL role manager.
+func (f *FakeCluster) Roles() dc.RoleManager { return f.roles }
 
 // StartManager runs the data center controller (and others registered by
 // setup) against the API server, with the fake cluster.
@@ -436,7 +467,7 @@ func StartManager(t *testing.T, env *envtest.Environment, s *runtime.Scheme, f *
 	}
 	r := &dc.Reconciler{Client: mgr.GetClient(), Scheme: s, Recorder: mgr.GetEventRecorderFor("test"), AgentImage: "operator:test",
 		Mgmt:  func(context.Context, *v1.CassandraRoomDatacenter) (mgmt.Client, error) { return f, nil },
-		Roles: &fakeRoles{}}
+		Roles: f.roles}
 	if err := r.SetupWithManager(mgr); err != nil {
 		t.Fatal(err)
 	}

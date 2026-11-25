@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/gocql/gocql"
@@ -31,6 +32,8 @@ type RoleManager interface {
 	// default superuser (cassandra/cassandra), and disables the default
 	// one's login. It does nothing once the superuser can log in.
 	EnsureSuperuser(ctx context.Context, c Conn, user, password string) error
+	// Truncate truncates tables ("keyspace.table") as the superuser.
+	Truncate(ctx context.Context, c Conn, user, password string, tables []string) error
 }
 
 // CQLRoles is the RoleManager over gocql.
@@ -74,6 +77,38 @@ func (CQLRoles) EnsureSuperuser(ctx context.Context, c Conn, user, password stri
 	}
 	defer s2.Close()
 	return s2.Query("ALTER ROLE cassandra WITH PASSWORD = ? AND LOGIN = false", randomPassword()).WithContext(ctx).Exec()
+}
+
+func (CQLRoles) Truncate(ctx context.Context, c Conn, user, password string, tables []string) error {
+	s, err := session(c, user, password)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	for _, t := range tables {
+		ks, table, ok := strings.Cut(t, ".")
+		if !ok {
+			return fmt.Errorf("bad table %q", t)
+		}
+		if err := s.Query("TRUNCATE " + quoteIdent(ks) + "." + quoteIdent(table)).Consistency(gocql.All).WithContext(ctx).Exec(); err != nil {
+			return fmt.Errorf("truncating %s: %w", t, err)
+		}
+	}
+	return nil
+}
+
+// SuperuserConn returns how to reach a data center's ready nodes over CQL
+// as the superuser.
+func SuperuserConn(ctx context.Context, c client.Client, dc *v1.CassandraRoomDatacenter, hosts []string) (Conn, string, string, error) {
+	s := &corev1.Secret{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: dc.Namespace, Name: superuserSecret(dc)}, s); err != nil {
+		return Conn{}, "", "", err
+	}
+	cfg, err := clientTLS(ctx, c, dc)
+	if err != nil {
+		return Conn{}, "", "", err
+	}
+	return Conn{Hosts: hosts, Port: 9042, TLS: cfg}, string(s.Data["username"]), string(s.Data["password"]), nil
 }
 
 func quoteIdent(s string) string {
