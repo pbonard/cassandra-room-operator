@@ -37,6 +37,8 @@ spec:
   backup:
     bucket: prod-cassandra-room-backups
     region: us-east-1
+    commitLogArchive:
+      interval: 1m  # point-in-time restores
   repairs:
   - name: weekly
     spec:

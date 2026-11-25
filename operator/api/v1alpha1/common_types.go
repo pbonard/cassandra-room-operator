@@ -3,6 +3,7 @@ package v1alpha1
 import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // ServerConfig is the configuration of cassandra-room nodes (what
@@ -167,6 +168,20 @@ type S3Storage struct {
 	// once (default 4).
 	// +optional
 	Concurrency int32 `json:"concurrency,omitempty"`
+	// CommitLogArchive keeps every node's commit log in the store too, so
+	// that a restore can reach any point in time since the oldest backup.
+	// +optional
+	CommitLogArchive *CommitLogArchive `json:"commitLogArchive,omitempty"`
+}
+
+// CommitLogArchive uploads the nodes' commit logs (Medusa's point-in-time
+// restores, Cassandra's commit log archiving).
+type CommitLogArchive struct {
+	// Interval between upload rounds (default 1m). Each round closes the
+	// node's commit log segment first; a point in time can be restored once
+	// a round passed it.
+	// +optional
+	Interval *metav1.Duration `json:"interval,omitempty"`
 }
 
 // Condition types.

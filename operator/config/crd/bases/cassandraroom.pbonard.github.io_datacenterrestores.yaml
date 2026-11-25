@@ -53,6 +53,9 @@ spec:
               backup:
                 description: Backup is the backup's name in the object store.
                 type: string
+              consistency:
+                description: Consistency of a load's writes (default ALL).
+                type: string
               datacenter:
                 type: string
               import:
@@ -65,6 +68,27 @@ spec:
                 items:
                   type: string
                 type: array
+              load:
+                description: |-
+                  Load loads the files of SourceDatacenter's nodes through this data
+                  center's nodes instead of importing each node's own.
+                type: boolean
+              pointInTime:
+                description: |-
+                  PointInTime replays each node's archived commit log after the import,
+                  up to this time.
+                format: date-time
+                type: string
+              sourceCluster:
+                description: |-
+                  SourceCluster is the cluster whose backup this is, by its name in the
+                  object store (default: this data center's cluster). Needs Load.
+                type: string
+              sourceDatacenter:
+                description: |-
+                  SourceDatacenter is the backup's data center to load (default: its
+                  first).
+                type: string
               truncate:
                 description: |-
                   Truncate makes this data center truncate the tables first (for the

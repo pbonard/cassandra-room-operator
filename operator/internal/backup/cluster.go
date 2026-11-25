@@ -287,7 +287,9 @@ func (r *ScheduleReconciler) retain(ctx context.Context, s *v1.CassandraRoomBack
 }
 
 // RestoreReconciler runs CassandraRoomRestores: every data center
-// downloads; the first truncates the tables; then every one imports.
+// downloads; the first truncates the tables; then every one imports (and
+// replays commit logs to a point in time). In Load mode, only the first
+// data center takes part: its nodes load the backup through themselves.
 type RestoreReconciler struct {
 	ControlPlane
 	ctrl controller.Controller
@@ -311,14 +313,38 @@ func (r *RestoreReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if st.Phase == v1.BackupSucceeded || st.Phase == v1.BackupFailed {
 		return ctrl.Result{}, nil
 	}
-	b := &v1.CassandraRoomBackup{}
-	if err := r.Get(ctx, types.NamespacedName{Namespace: rs.Namespace, Name: rs.Spec.Backup}, b); err != nil || b.Status.Phase != v1.BackupSucceeded {
-		st.Phase, st.Message = v1.BackupFailed, "backup "+rs.Spec.Backup+" does not exist or did not succeed"
+	fail := func(msg string) (ctrl.Result, error) {
+		st.Phase, st.Message = v1.BackupFailed, msg
+		r.Recorder.Event(rs, corev1.EventTypeWarning, "RestoreFailed", msg)
 		return ctrl.Result{}, saveStatus(ctx, r.Client, rs, before, st)
+	}
+	load := rs.Spec.Mode == v1.RestoreLoad
+	if rs.Spec.SourceCluster == "" {
+		b := &v1.CassandraRoomBackup{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: rs.Namespace, Name: rs.Spec.Backup}, b); err != nil || b.Status.Phase != v1.BackupSucceeded {
+			return fail("backup " + rs.Spec.Backup + " does not exist or did not succeed")
+		}
+		if pit := rs.Spec.PointInTime; pit != nil && b.Status.StartedAt != nil && pit.Before(b.Status.StartedAt) {
+			return fail("the backup started after the point in time: restore an earlier one")
+		}
+	} else if !load {
+		return fail("restoring another cluster's backup needs mode Load")
+	}
+	if pit := rs.Spec.PointInTime; pit != nil && st.StartedAt == nil {
+		switch {
+		case load:
+			return fail("a point in time needs mode Import")
+		case pit.After(time.Now()):
+			return fail("the point in time is in the future")
+		}
 	}
 	targets, err := r.targets(ctx, rs.Namespace, rs.Spec.Cluster)
 	if err != nil {
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, client.IgnoreNotFound(err)
+	}
+	if load && len(targets) > 1 {
+		// The first data center's nodes write to every replica.
+		targets = targets[:1]
 	}
 	if err := watchParts(ctx, &r.ControlPlane, r.ctrl, "restore", &v1.DatacenterRestore{}, targets); err != nil {
 		return ctrl.Result{}, err
@@ -334,7 +360,9 @@ func (r *RestoreReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if apierrors.IsNotFound(err) {
 			part = &v1.DatacenterRestore{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace,
 				Labels: map[string]string{LabelRestore: rs.Name, names.LabelCluster: names.Sanitize(rs.Spec.Cluster)}},
-				Spec: v1.DatacenterRestoreSpec{Datacenter: t.obj, Backup: rs.Spec.Backup, Keyspaces: rs.Spec.Keyspaces, Truncate: i == 0}}
+				Spec: v1.DatacenterRestoreSpec{Datacenter: t.obj, Backup: rs.Spec.Backup, Keyspaces: rs.Spec.Keyspaces, Truncate: i == 0,
+					Load: load, SourceCluster: rs.Spec.SourceCluster, SourceDatacenter: rs.Spec.SourceDatacenter,
+					Consistency: rs.Spec.Consistency, PointInTime: rs.Spec.PointInTime}}
 			remote.SetOwner(part, rs)
 			if err := t.c.Create(ctx, part); err != nil {
 				return ctrl.Result{}, err

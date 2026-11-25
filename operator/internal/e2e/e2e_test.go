@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/pbonard/cassandra-room-operator/operator/internal/agent"
+	"github.com/pbonard/cassandra-room-operator/operator/internal/catalog"
 	"github.com/pbonard/cassandra-room-operator/operator/internal/dc"
 	"github.com/pbonard/cassandra-room-operator/operator/internal/mgmt"
 	"github.com/pbonard/cassandra-room-operator/operator/internal/objstore"
@@ -64,7 +65,8 @@ func TestAgainstCassandraRoom(t *testing.T) {
 	flags := filepath.Join(t.TempDir(), "flags")
 	require.NoError(t, os.WriteFile(flags, []byte(fmt.Sprintf("-addr=127.0.0.1:%d\n", native)), 0o644))
 	cmd := exec.Command(bin, "-flags-file="+flags, "-data-dir="+dataDir, fmt.Sprintf("-admin-address=127.0.0.1:%d", admin),
-		"-authenticator=PasswordAuthenticator", "-authorizer=CassandraAuthorizer", "-cluster-name=e2e")
+		"-authenticator=PasswordAuthenticator", "-authorizer=CassandraAuthorizer", "-cluster-name=e2e",
+		"-commitlog-archive-dir=commitlog-archive")
 	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 	require.NoError(t, cmd.Start())
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() })
@@ -100,7 +102,10 @@ func TestAgainstCassandraRoom(t *testing.T) {
 
 	// Backup through the agent.
 	store := objstore.NewMemory()
-	a := &agent.Agent{Store: store, Mgmt: m, MgmtAddr: addr, DataDir: dataDir}
+	newAgent := func() *agent.Agent {
+		return &agent.Agent{Store: store, Mgmt: m, MgmtAddr: addr, DataDir: dataDir, Cluster: "e2e", Datacenter: "datacenter1", Pod: "p0"}
+	}
+	a := newAgent()
 	a.StartBackup(agent.BackupRequest{Cluster: "e2e", Datacenter: "datacenter1", Backup: "b1", Pod: "p0"})
 	var st agent.Status
 	require.Eventually(t, func() bool {
@@ -111,11 +116,19 @@ func TestAgainstCassandraRoom(t *testing.T) {
 	require.Equal(t, agent.Succeeded, st.Phase, st.Error)
 	require.Positive(t, st.Files)
 
-	// Writes after the backup are lost by the restore.
+	// Writes after the backup are lost by the restore; those before the
+	// point in time come back with a restore to it.
 	for i := 50; i < 60; i++ {
 		require.NoError(t, s.Query("INSERT INTO ks.kv (k, v) VALUES (?, 'y')", i).Exec())
 	}
-	require.Len(t, ints(t, s), 60)
+	time.Sleep(20 * time.Millisecond)
+	pit := time.Now()
+	time.Sleep(20 * time.Millisecond)
+	for i := 60; i < 70; i++ {
+		require.NoError(t, s.Query("INSERT INTO ks.kv (k, v) VALUES (?, 'z')", i).Exec())
+	}
+	require.NoError(t, s.Query("DELETE FROM ks.kv WHERE k = 0").Exec(), "after the point in time")
+	require.Len(t, ints(t, s), 69)
 
 	// Restore: download, truncate (as the restore controller does), import.
 	a.StartRestore(agent.RestoreRequest{Cluster: "e2e", Datacenter: "datacenter1", Backup: "b1", Pod: "p0"})
@@ -137,4 +150,35 @@ func TestAgainstCassandraRoom(t *testing.T) {
 	got := ints(t, s)
 	require.Len(t, got, 50)
 	require.Equal(t, 49, got[49])
+
+	restore := func(a *agent.Agent, req agent.RestoreRequest) {
+		t.Helper()
+		a.StartRestore(req)
+		require.Eventually(t, func() bool {
+			st, _ = a.RestoreStatus(req.Backup)
+			return st.Phase == agent.Downloaded || st.Phase == agent.Failed
+		}, 20*time.Second, 50*time.Millisecond)
+		require.Equal(t, agent.Downloaded, st.Phase, st.Error)
+		require.NoError(t, roles.Truncate(ctx, conn, "admin", "s3cret", []string{"ks.kv"}))
+		require.NoError(t, a.Import(req.Backup))
+		require.Eventually(t, func() bool {
+			st, _ = a.RestoreStatus(req.Backup)
+			return st.Phase == agent.Succeeded || st.Phase == agent.Failed
+		}, 20*time.Second, 50*time.Millisecond)
+		require.Equal(t, agent.Succeeded, st.Phase, st.Error)
+	}
+
+	// To the point in time: the backup, then the commit log up to it.
+	restore(newAgent(), agent.RestoreRequest{Cluster: "e2e", Datacenter: "datacenter1", Backup: "b1", Pod: "p0", PointInTime: &pit})
+	got = ints(t, s)
+	require.Len(t, got, 60)
+	require.Equal(t, 0, got[0], "deleted after the point in time")
+	require.Equal(t, 59, got[59])
+
+	// Load: the backup through the node as coordinator.
+	restore(newAgent(), agent.RestoreRequest{Cluster: "e2e", Datacenter: "datacenter1", Backup: "b1", Pod: "p0", Load: true, Sources: []string{"p0"}, Consistency: "ONE"})
+	require.Len(t, ints(t, s), 50)
+	segs, err := catalog.CommitLog(ctx, store, "e2e", "datacenter1", "p0")
+	require.NoError(t, err)
+	require.NotEmpty(t, segs, "the commit log was uploaded")
 }

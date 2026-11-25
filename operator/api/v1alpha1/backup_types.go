@@ -114,6 +114,25 @@ type DatacenterRestoreSpec struct {
 	// Import starts the nodes' imports (once the tables are truncated).
 	// +optional
 	Import bool `json:"import,omitempty"`
+	// Load loads the files of SourceDatacenter's nodes through this data
+	// center's nodes instead of importing each node's own.
+	// +optional
+	Load bool `json:"load,omitempty"`
+	// SourceCluster is the cluster whose backup this is, by its name in the
+	// object store (default: this data center's cluster). Needs Load.
+	// +optional
+	SourceCluster string `json:"sourceCluster,omitempty"`
+	// SourceDatacenter is the backup's data center to load (default: its
+	// first).
+	// +optional
+	SourceDatacenter string `json:"sourceDatacenter,omitempty"`
+	// Consistency of a load's writes (default ALL).
+	// +optional
+	Consistency string `json:"consistency,omitempty"`
+	// PointInTime replays each node's archived commit log after the import,
+	// up to this time.
+	// +optional
+	PointInTime *metav1.Time `json:"pointInTime,omitempty"`
 }
 
 // DatacenterRestoreStatus is a data center restore's state.
@@ -265,14 +284,50 @@ type CassandraRoomBackupScheduleList struct {
 	Items           []CassandraRoomBackupSchedule `json:"items"`
 }
 
+// RestoreMode is how a restore puts the files back.
+// +kubebuilder:validation:Enum=Import;Load
+type RestoreMode string
+
+const (
+	// RestoreImport: each node imports its own files (the same topology).
+	RestoreImport RestoreMode = "Import"
+	// RestoreLoad: the first data center's nodes load a data center's
+	// files through themselves to the replicas (any topology).
+	RestoreLoad RestoreMode = "Load"
+)
+
 // CassandraRoomRestoreSpec restores a backup into a cluster.
 type CassandraRoomRestoreSpec struct {
 	Cluster string `json:"cluster"`
-	// Backup is the CassandraRoomBackup's name.
+	// Backup is the CassandraRoomBackup's name or, with SourceCluster, the
+	// backup's name in the object store.
 	Backup string `json:"backup"`
 	// Keyspaces to restore (default: every keyspace of the backup).
 	// +optional
 	Keyspaces []string `json:"keyspaces,omitempty"`
+	// Mode is Import (default) or Load.
+	// +optional
+	Mode RestoreMode `json:"mode,omitempty"`
+	// SourceCluster restores a backup of another cluster (its name in the
+	// object store, which must be the same bucket): Load only. The tables
+	// must exist (create the schema first).
+	// +optional
+	SourceCluster string `json:"sourceCluster,omitempty"`
+	// SourceDatacenter is the backup's data center that Load reads
+	// (default: its first). Each data center holds every row it
+	// replicates, so one suffices when it replicates every keyspace.
+	// +optional
+	SourceDatacenter string `json:"sourceDatacenter,omitempty"`
+	// Consistency of Load's writes (default ALL).
+	// +optional
+	Consistency string `json:"consistency,omitempty"`
+	// PointInTime restores the cluster as it was at this time: the backup,
+	// then each node's archived commit log up to it, leaving out what was
+	// written later (by write timestamp). Import only; the backup must be
+	// the last one before it, and the data centers' backup storage must
+	// archive commit logs.
+	// +optional
+	PointInTime *metav1.Time `json:"pointInTime,omitempty"`
 }
 
 // CassandraRoomRestoreStatus is a cluster restore's state.

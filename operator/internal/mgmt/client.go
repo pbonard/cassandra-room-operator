@@ -59,7 +59,29 @@ type SnapshotTable struct {
 	Keyspace string   `json:"keyspace"`
 	Table    string   `json:"table"`
 	ID       string   `json:"id"`
+	Storage  uint64   `json:"storage"` // names the table in the commit log
 	Files    []string `json:"files"`
+}
+
+// LoadResult is what a load wrote.
+type LoadResult struct {
+	Entries int64 `json:"entries"`
+	Bytes   int64 `json:"bytes"`
+}
+
+// ReplayRequest replays archived commit log segments on a node.
+type ReplayRequest struct {
+	Files []string `json:"files"`
+	// Tables maps storage ids (as snapshots report them) to "keyspace.table".
+	Tables map[string]string `json:"tables"`
+	// Until is the point in time in microseconds since the epoch (0: all).
+	Until int64 `json:"until,omitempty"`
+}
+
+// ReplayResult is what a replay applied.
+type ReplayResult struct {
+	Applied int64 `json:"applied"`
+	Skipped int64 `json:"skipped"`
 }
 
 // Client is the management API of nodes, addressed as "host:port".
@@ -78,6 +100,12 @@ type Client interface {
 	Snapshot(ctx context.Context, addr, name string, keyspaces []string) ([]SnapshotTable, error)
 	ClearSnapshot(ctx context.Context, addr, name string) error
 	Import(ctx context.Context, addr, keyspace, table string, files []string) error
+	// Load writes sstables' rows through the node, as coordinator, to their
+	// replicas (any topology), at a consistency level (ALL if empty).
+	Load(ctx context.Context, addr, keyspace, table string, files []string, consistency string) (LoadResult, error)
+	// ArchiveCommitLog closes the commit log segment and lists the archive.
+	ArchiveCommitLog(ctx context.Context, addr string) ([]string, error)
+	ReplayCommitLog(ctx context.Context, addr string, req ReplayRequest) (ReplayResult, error)
 }
 
 // HTTPClient is the Client over HTTP(S).
@@ -221,6 +249,24 @@ func (c *HTTPClient) ClearSnapshot(ctx context.Context, addr, name string) error
 
 func (c *HTTPClient) Import(ctx context.Context, addr, keyspace, table string, files []string) error {
 	return c.do(ctx, "POST", addr, "/api/v1/import", map[string]any{"keyspace": keyspace, "table": table, "files": files}, nil)
+}
+
+func (c *HTTPClient) Load(ctx context.Context, addr, keyspace, table string, files []string, consistency string) (r LoadResult, err error) {
+	err = c.do(ctx, "POST", addr, "/api/v1/load", map[string]any{"keyspace": keyspace, "table": table, "files": files, "consistency": consistency}, &r)
+	return
+}
+
+func (c *HTTPClient) ArchiveCommitLog(ctx context.Context, addr string) ([]string, error) {
+	var out struct {
+		Files []string `json:"files"`
+	}
+	err := c.do(ctx, "POST", addr, "/api/v1/commitlog/archive", nil, &out)
+	return out.Files, err
+}
+
+func (c *HTTPClient) ReplayCommitLog(ctx context.Context, addr string, req ReplayRequest) (r ReplayResult, err error) {
+	err = c.do(ctx, "POST", addr, "/api/v1/commitlog/replay", req, &r)
+	return
 }
 
 // Token renders a token for a repair request.

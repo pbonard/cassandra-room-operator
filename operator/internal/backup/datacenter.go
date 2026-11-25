@@ -201,6 +201,18 @@ func (r *DatacenterBackupReconciler) delete(ctx context.Context, b *v1.Datacente
 		if _, err := catalog.Collect(ctx, store, d.Spec.ClusterName, grace, time.Now()); err != nil {
 			return err
 		}
+		// The commit log is needed only from the oldest backup on.
+		if d.Spec.Backup.CommitLogArchive != nil {
+			oldest, err := catalog.OldestBackup(ctx, store, d.Spec.ClusterName)
+			if err != nil {
+				return err
+			}
+			if !oldest.IsZero() {
+				if _, err := catalog.PruneCommitLog(ctx, store, d.Spec.ClusterName, oldest); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	controllerutil.RemoveFinalizer(b, finalizer)
 	return r.Update(ctx, b)
@@ -242,9 +254,33 @@ func (r *DatacenterRestoreReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 	cluster, dcName := d.Spec.ClusterName, d.DCName()
+	// Where the files come from: this data center's own part, or (Load)
+	// any data center of any cluster's backup.
+	srcCluster, srcDC := cluster, dcName
+	if rs.Spec.Load {
+		if rs.Spec.SourceCluster != "" {
+			srcCluster = rs.Spec.SourceCluster
+		}
+		srcDC = rs.Spec.SourceDatacenter
+		if srcDC == "" {
+			backups, err := catalog.Backups(ctx, store, srcCluster)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			if len(backups[rs.Spec.Backup]) == 0 {
+				return fail(fmt.Sprintf("cluster %s has no complete backup %q", srcCluster, rs.Spec.Backup))
+			}
+			srcDC = backups[rs.Spec.Backup][0]
+		}
+	} else if rs.Spec.SourceCluster != "" && rs.Spec.SourceCluster != cluster {
+		return fail("restoring another cluster's backup needs load")
+	}
+	if rs.Spec.PointInTime != nil && (rs.Spec.Load || d.Spec.Backup.CommitLogArchive == nil) {
+		return fail("a point in time needs each node's own backup (import) and commit log archiving")
+	}
 	var idx catalog.Index
-	if err := catalog.GetJSON(ctx, store, catalog.IndexKey(cluster, rs.Spec.Backup, dcName), &idx); errors.Is(err, objstore.ErrNotFound) {
-		return fail(fmt.Sprintf("backup %q has no complete part for data center %s", rs.Spec.Backup, dcName))
+	if err := catalog.GetJSON(ctx, store, catalog.IndexKey(srcCluster, rs.Spec.Backup, srcDC), &idx); errors.Is(err, objstore.ErrNotFound) {
+		return fail(fmt.Sprintf("backup %q has no complete part for data center %s", rs.Spec.Backup, srcDC))
 	} else if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -264,12 +300,22 @@ func (r *DatacenterRestoreReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		sort.Strings(pods)
 		want := slices.Clone(idx.Pods)
 		sort.Strings(want)
-		if !slices.Equal(pods, want) {
-			return fail(fmt.Sprintf("the data center's pods %v are not the backup's %v: a restore needs the same topology", pods, want))
+		if !rs.Spec.Load && !slices.Equal(pods, want) {
+			return fail(fmt.Sprintf("the data center's pods %v are not the backup's %v: importing needs the same topology (load does not)", pods, want))
 		}
 		st.Phase, st.StartedAt, st.Nodes = v1.BackupRunning, &metav1.Time{Time: time.Now()}, nil
 		for _, p := range pods {
 			st.Nodes = append(st.Nodes, v1.NodeTransfer{Pod: p, Phase: v1.BackupPending})
+		}
+	}
+	// Load: the backup's nodes, spread over this data center's.
+	sources := map[string][]string{}
+	if rs.Spec.Load && len(st.Nodes) > 0 {
+		want := slices.Clone(idx.Pods)
+		sort.Strings(want)
+		for i, p := range want {
+			n := st.Nodes[i%len(st.Nodes)].Pod
+			sources[n] = append(sources[n], p)
 		}
 	}
 	byPod := map[string]dc.Endpoint{}
@@ -294,8 +340,13 @@ func (r *DatacenterRestoreReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 		s, err := r.Agents.RestoreStatus(ctx, e.Agent, rs.Spec.Backup)
 		if errors.Is(err, agent.ErrNoJob) {
-			s, err = r.Agents.StartRestore(ctx, e.Agent, agent.RestoreRequest{Cluster: cluster, Datacenter: dcName,
-				Backup: rs.Spec.Backup, Pod: n.Pod, Keyspaces: rs.Spec.Keyspaces})
+			req := agent.RestoreRequest{Cluster: srcCluster, Datacenter: srcDC,
+				Backup: rs.Spec.Backup, Pod: n.Pod, Keyspaces: rs.Spec.Keyspaces,
+				Load: rs.Spec.Load, Sources: sources[n.Pod], Consistency: rs.Spec.Consistency}
+			if rs.Spec.PointInTime != nil {
+				req.PointInTime = &rs.Spec.PointInTime.Time
+			}
+			s, err = r.Agents.StartRestore(ctx, e.Agent, req)
 		}
 		if err != nil {
 			n.Error = err.Error()
@@ -325,7 +376,7 @@ func (r *DatacenterRestoreReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 	}
 	if rs.Spec.Truncate && !st.Truncated {
-		tables, err := backupTables(ctx, store, cluster, rs.Spec.Backup, dcName, idx.Pods, rs.Spec.Keyspaces)
+		tables, err := backupTables(ctx, store, srcCluster, rs.Spec.Backup, srcDC, idx.Pods, rs.Spec.Keyspaces)
 		if err != nil {
 			return ctrl.Result{}, err
 		}

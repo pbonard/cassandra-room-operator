@@ -36,6 +36,17 @@ type node struct {
 	dir      string
 	mu       sync.Mutex
 	imported []string
+	loaded   []string
+}
+
+func (n *node) Load(_ context.Context, _, keyspace, table string, files []string, _ string) (mgmt.LoadResult, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	for _, f := range files {
+		b, _ := os.ReadFile(f)
+		n.loaded = append(n.loaded, keyspace+"."+table+":"+string(b))
+	}
+	return mgmt.LoadResult{Entries: int64(len(files))}, nil
 }
 
 func (n *node) Node(context.Context, string) (mgmt.NodeInfo, error) {
@@ -161,6 +172,41 @@ func TestBackupRestoreSchedule(t *testing.T) {
 	require.NoError(t, c.Create(ctx, &v1.CassandraRoomRestore{ObjectMeta: metav1.ObjectMeta{Name: "r2", Namespace: ns},
 		Spec: v1.CassandraRoomRestoreSpec{Cluster: "c1", Backup: "nope"}}))
 	waitPhase(t, c, &v1.CassandraRoomRestore{}, ns, "r2", v1.BackupFailed, func(o client.Object) v1.BackupPhase { return o.(*v1.CassandraRoomRestore).Status.Phase })
+	// A point in time needs commit log archiving, and import.
+	pit := metav1.Now()
+	require.NoError(t, c.Create(ctx, &v1.CassandraRoomRestore{ObjectMeta: metav1.ObjectMeta{Name: "r3", Namespace: ns},
+		Spec: v1.CassandraRoomRestoreSpec{Cluster: "c1", Backup: "b1", PointInTime: &pit}}))
+	waitPhase(t, c, &v1.CassandraRoomRestore{}, ns, "r3", v1.BackupFailed, func(o client.Object) v1.BackupPhase { return o.(*v1.CassandraRoomRestore).Status.Phase })
+	require.NoError(t, c.Create(ctx, &v1.CassandraRoomRestore{ObjectMeta: metav1.ObjectMeta{Name: "r4", Namespace: ns},
+		Spec: v1.CassandraRoomRestoreSpec{Cluster: "c1", Backup: "b1", Mode: v1.RestoreLoad, PointInTime: &pit}}))
+	waitPhase(t, c, &v1.CassandraRoomRestore{}, ns, "r4", v1.BackupFailed, func(o client.Object) v1.BackupPhase { return o.(*v1.CassandraRoomRestore).Status.Phase })
+
+	// Load into another cluster of another topology: c1's backup (two
+	// nodes) through c2's three nodes.
+	require.NoError(t, c.Create(ctx, &v1.CassandraRoomCluster{ObjectMeta: metav1.ObjectMeta{Name: "c2", Namespace: ns}, Spec: v1.CassandraRoomClusterSpec{
+		Image: "x", Datacenters: []v1.DatacenterTemplate{{Name: "east", Size: 3}}, Backup: &v1.S3Storage{Bucket: "b"}}}))
+	require.Eventually(t, func() bool {
+		cl := &v1.CassandraRoomCluster{}
+		return c.Get(ctx, types.NamespacedName{Namespace: ns, Name: "c2"}, cl) == nil && cl.Status.Phase == v1.PhaseReady
+	}, 30*time.Second, 100*time.Millisecond)
+	require.NoError(t, c.Create(ctx, &v1.CassandraRoomRestore{ObjectMeta: metav1.ObjectMeta{Name: "r5", Namespace: ns},
+		Spec: v1.CassandraRoomRestoreSpec{Cluster: "c2", Backup: "b1", SourceCluster: "c1", Mode: v1.RestoreLoad}}))
+	waitPhase(t, c, &v1.CassandraRoomRestore{}, ns, "r5", v1.BackupSucceeded, func(o client.Object) v1.BackupPhase { return o.(*v1.CassandraRoomRestore).Status.Phase })
+	ag.mu.Lock()
+	var loaded []string
+	for _, n := range ag.nodes {
+		loaded = append(loaded, n.loaded...)
+	}
+	ag.mu.Unlock()
+	require.Len(t, loaded, 2, "each of the backup's nodes loaded once: %v", loaded)
+	for _, l := range loaded {
+		require.True(t, strings.HasPrefix(l, "ks.t1:data of "), l)
+	}
+	require.Equal(t, []string{"ks.t1", "ks.t1"}, f.Truncated(), "c2's table was truncated first")
+	// Importing another cluster's backup is refused.
+	require.NoError(t, c.Create(ctx, &v1.CassandraRoomRestore{ObjectMeta: metav1.ObjectMeta{Name: "r6", Namespace: ns},
+		Spec: v1.CassandraRoomRestoreSpec{Cluster: "c2", Backup: "b1", SourceCluster: "c1"}}))
+	waitPhase(t, c, &v1.CassandraRoomRestore{}, ns, "r6", v1.BackupFailed, func(o client.Object) v1.BackupPhase { return o.(*v1.CassandraRoomRestore).Status.Phase })
 
 	// A schedule keeping one backup.
 	require.NoError(t, c.Create(ctx, &v1.CassandraRoomBackupSchedule{ObjectMeta: metav1.ObjectMeta{Name: "every", Namespace: ns},
