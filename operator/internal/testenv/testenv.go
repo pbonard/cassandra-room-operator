@@ -25,6 +25,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -420,7 +421,9 @@ func StartManager(t *testing.T, env *envtest.Environment, s *runtime.Scheme, f *
 	if os.Getenv("TEST_LOG") != "" {
 		ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
 	}
-	mgr, err := ctrl.NewManager(env.Config, ctrl.Options{Scheme: s, Metrics: metricsserver.Options{BindAddress: "0"}})
+	skip := true // several managers in one test process
+	mgr, err := ctrl.NewManager(env.Config, ctrl.Options{Scheme: s, Metrics: metricsserver.Options{BindAddress: "0"},
+		Controller: config.Controller{SkipNameValidation: &skip}})
 	if err != nil {
 		t.Fatal(err)
 	}
