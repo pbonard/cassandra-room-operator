@@ -57,10 +57,10 @@ type RepairScheduleSpec struct {
 type RepairRunState string
 
 const (
-	RepairRunning  RepairRunState = "Running"
-	RepairDone     RepairRunState = "Done"
-	RepairErrored  RepairRunState = "Errored"
-	RepairAborted  RepairRunState = "Aborted"
+	RepairRunning RepairRunState = "Running"
+	RepairDone    RepairRunState = "Done"
+	RepairErrored RepairRunState = "Errored"
+	RepairAborted RepairRunState = "Aborted"
 )
 
 // RepairRun is a run of a schedule.

@@ -1,0 +1,133 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.3
+  name: datacenterrestores.cassandraroom.pbonard.github.io
+spec:
+  group: cassandraroom.pbonard.github.io
+  names:
+    kind: DatacenterRestore
+    listKind: DatacenterRestoreList
+    plural: datacenterrestores
+    singular: datacenterrestore
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.datacenter
+      name: Datacenter
+      type: string
+    - jsonPath: .spec.backup
+      name: Backup
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: DatacenterRestore is a data center's part of a restore.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: DatacenterRestoreSpec restores a backup into a data center's
+              nodes.
+            properties:
+              backup:
+                description: Backup is the backup's name in the object store.
+                type: string
+              datacenter:
+                type: string
+              import:
+                description: Import starts the nodes' imports (once the tables are
+                  truncated).
+                type: boolean
+              keyspaces:
+                description: 'Keyspaces to restore (default: every keyspace of the
+                  backup).'
+                items:
+                  type: string
+                type: array
+              truncate:
+                description: |-
+                  Truncate makes this data center truncate the tables first (for the
+                  whole cluster: one data center does it).
+                type: boolean
+            required:
+            - backup
+            - datacenter
+            type: object
+          status:
+            description: DatacenterRestoreStatus is a data center restore's state.
+            properties:
+              finishedAt:
+                format: date-time
+                type: string
+              message:
+                type: string
+              nodes:
+                items:
+                  description: NodeTransfer is a node's part of a backup or restore.
+                  properties:
+                    bytes:
+                      format: int64
+                      type: integer
+                    error:
+                      type: string
+                    files:
+                      description: |-
+                        Files and Bytes of the node's backup; Transferred the bytes uploaded
+                        (new files) or downloaded.
+                      format: int32
+                      type: integer
+                    hostId:
+                      type: string
+                    phase:
+                      description: BackupPhase is a backup's or restore's state.
+                      type: string
+                    pod:
+                      type: string
+                    transferred:
+                      format: int64
+                      type: integer
+                  required:
+                  - bytes
+                  - files
+                  - phase
+                  - pod
+                  - transferred
+                  type: object
+                type: array
+              phase:
+                description: BackupPhase is a backup's or restore's state.
+                type: string
+              startedAt:
+                format: date-time
+                type: string
+              truncated:
+                description: Truncated is set once this data center truncated the
+                  tables.
+                type: boolean
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

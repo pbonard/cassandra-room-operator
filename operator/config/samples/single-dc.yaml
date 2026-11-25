@@ -1,0 +1,21 @@
+# A cluster of one data center of three nodes over three racks (zones).
+apiVersion: cassandraroom.pbonard.github.io/v1alpha1
+kind: CassandraRoomCluster
+metadata:
+  name: demo
+spec:
+  image: ghcr.io/pbonard/cassandra-room:latest
+  datacenters:
+  - name: dc1
+    size: 3
+    racks:
+    - {name: a, nodeAffinityLabels: {topology.kubernetes.io/zone: us-east-1a}}
+    - {name: b, nodeAffinityLabels: {topology.kubernetes.io/zone: us-east-1b}}
+    - {name: c, nodeAffinityLabels: {topology.kubernetes.io/zone: us-east-1c}}
+    storage:
+      storageClassName: gp3
+      size: 100Gi
+    pod:
+      resources:
+        requests: {cpu: "2", memory: 8Gi}
+        limits: {memory: 8Gi}

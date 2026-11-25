@@ -1,0 +1,25 @@
+# A backup now, a nightly schedule keeping a week, and a restore.
+apiVersion: cassandraroom.pbonard.github.io/v1alpha1
+kind: CassandraRoomBackup
+metadata:
+  name: before-migration
+spec:
+  cluster: prod
+---
+apiVersion: cassandraroom.pbonard.github.io/v1alpha1
+kind: CassandraRoomBackupSchedule
+metadata:
+  name: nightly
+spec:
+  cluster: prod
+  schedule: "30 1 * * *"
+  keep: 7
+---
+apiVersion: cassandraroom.pbonard.github.io/v1alpha1
+kind: CassandraRoomRestore
+metadata:
+  name: restore-before-migration
+spec:
+  cluster: prod
+  backup: before-migration
+  keyspaces: [app]

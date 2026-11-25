@@ -65,8 +65,9 @@ func (CQLRoles) EnsureSuperuser(ctx context.Context, c Conn, user, password stri
 		return fmt.Errorf("logging in as the default superuser: %w", err)
 	}
 	defer s.Close()
-	if err := s.Query("CREATE ROLE IF NOT EXISTS "+quoteIdent(user)+" WITH PASSWORD = ? AND SUPERUSER = true AND LOGIN = true", password).
-		WithContext(ctx).Exec(); err != nil {
+	// Role options take literals, not bind markers (as in Cassandra).
+	if err := s.Query("CREATE ROLE IF NOT EXISTS " + quoteIdent(user) + " WITH PASSWORD = " + quoteString(password) +
+		" AND SUPERUSER = true AND LOGIN = true").WithContext(ctx).Exec(); err != nil {
 		return fmt.Errorf("creating the superuser: %w", err)
 	}
 	// The default superuser can no longer log in (its password, known to
@@ -76,7 +77,7 @@ func (CQLRoles) EnsureSuperuser(ctx context.Context, c Conn, user, password stri
 		return fmt.Errorf("logging in as the new superuser: %w", err)
 	}
 	defer s2.Close()
-	return s2.Query("ALTER ROLE cassandra WITH PASSWORD = ? AND LOGIN = false", randomPassword()).WithContext(ctx).Exec()
+	return s2.Query("ALTER ROLE cassandra WITH PASSWORD = " + quoteString(randomPassword()) + " AND LOGIN = false").WithContext(ctx).Exec()
 }
 
 func (CQLRoles) Truncate(ctx context.Context, c Conn, user, password string, tables []string) error {
@@ -110,6 +111,9 @@ func SuperuserConn(ctx context.Context, c client.Client, dc *v1.CassandraRoomDat
 	}
 	return Conn{Hosts: hosts, Port: 9042, TLS: cfg}, string(s.Data["username"]), string(s.Data["password"]), nil
 }
+
+// quoteString is a CQL string literal.
+func quoteString(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
 
 func quoteIdent(s string) string {
 	out := []byte{'"'}
