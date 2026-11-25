@@ -68,6 +68,7 @@ type Client interface {
 	Node(ctx context.Context, addr string) (NodeInfo, error)
 	Nodes(ctx context.Context, addr string) ([]NodeInfo, error)
 	Ring(ctx context.Context, addr, keyspace string) ([]Range, error)
+	Keyspaces(ctx context.Context, addr string) ([]string, error)
 	Flush(ctx context.Context, addr string) error
 	Decommission(ctx context.Context, addr string) error
 	Cleanup(ctx context.Context, addr, keyspace string) error
@@ -169,6 +170,11 @@ func (c *HTTPClient) Nodes(ctx context.Context, addr string) (n []NodeInfo, err 
 
 func (c *HTTPClient) Ring(ctx context.Context, addr, keyspace string) (r []Range, err error) {
 	err = c.do(ctx, "GET", addr, "/api/v1/ring?keyspace="+urlQuery(keyspace), nil, &r)
+	return
+}
+
+func (c *HTTPClient) Keyspaces(ctx context.Context, addr string) (k []string, err error) {
+	err = c.do(ctx, "GET", addr, "/api/v1/keyspaces", nil, &k)
 	return
 }
 

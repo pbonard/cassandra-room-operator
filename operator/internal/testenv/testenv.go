@@ -171,6 +171,13 @@ func (f *FakeCluster) Ring(ctx context.Context, addr, keyspace string) ([]mgmt.R
 	return out, nil
 }
 
+func (f *FakeCluster) Keyspaces(ctx context.Context, addr string) ([]string, error) {
+	if _, err := f.node(addr); err != nil {
+		return nil, err
+	}
+	return []string{"ks1", "ks2"}, nil
+}
+
 func (f *FakeCluster) Flush(ctx context.Context, addr string) error {
 	_, err := f.node(addr)
 	return err
