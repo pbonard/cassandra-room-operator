@@ -22,9 +22,14 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	v1 "github.com/pbonard/cassandra-room-operator/operator/api/v1alpha1"
 	"github.com/pbonard/cassandra-room-operator/operator/internal/names"
@@ -39,13 +44,37 @@ type Reconciler struct {
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 	Remote   *remote.Clients
+
+	ctrl controller.Controller
 }
 
 // +kubebuilder:rbac:groups=cassandraroom.pbonard.github.io,resources=cassandraroomclusters;cassandraroomclusters/status;cassandraroomclusters/finalizers;clientconfigs;repairschedules,verbs=get;list;watch;create;update;patch;delete
 
 // SetupWithManager registers the controller.
+// Its data centers' changes reach it by watches: of the local cluster
+// through the manager, of remote clusters through their caches (see
+// watchRemote).
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).For(&v1.CassandraRoomCluster{}).Named("cassandraroomcluster").Complete(r)
+	c, err := ctrl.NewControllerManagedBy(mgr).For(&v1.CassandraRoomCluster{}).
+		Watches(&v1.CassandraRoomDatacenter{}, handler.EnqueueRequestsFromMapFunc(func(_ context.Context, o client.Object) []reconcile.Request {
+			return remote.Owner(o)
+		})).
+		Named("cassandraroomcluster").Build(r)
+	if err != nil {
+		return err
+	}
+	r.ctrl = c
+	return mgr.Add(r.Remote.Stopper())
+}
+
+// watchRemote watches the data centers of a remote cluster.
+func (r *Reconciler) watchRemote(ctx context.Context, k8sContext string) error {
+	return r.Remote.Watch(ctx, k8sContext, "cluster", func(c cache.Cache) error {
+		return r.ctrl.Watch(source.Kind(c, &v1.CassandraRoomDatacenter{},
+			handler.TypedEnqueueRequestsFromMapFunc(func(_ context.Context, o *v1.CassandraRoomDatacenter) []reconcile.Request {
+				return remote.Owner(o)
+			})))
+	})
 }
 
 // dcRef is a data center of the cluster, in its Kubernetes cluster.
@@ -84,6 +113,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		t := &cl.Spec.Datacenters[i]
 		c, err := r.Remote.Get(ctx, t.K8sContext)
 		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.watchRemote(ctx, t.K8sContext); err != nil {
 			return ctrl.Result{}, err
 		}
 		ns := t.Namespace
@@ -139,11 +171,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			// ones' seeds.
 			ref.obj = &v1.CassandraRoomDatacenter{ObjectMeta: metav1.ObjectMeta{Name: ref.key.Name, Namespace: ref.key.Namespace,
 				Labels: map[string]string{names.LabelCluster: names.Sanitize(cl.Name), names.LabelName: names.AppName}}, Spec: spec}
+			remote.SetOwner(ref.obj, cl)
 			if err := ref.c.Create(ctx, ref.obj); err != nil {
 				return ctrl.Result{}, err
 			}
 			r.Recorder.Eventf(cl, corev1.EventTypeNormal, "DatacenterCreated", "created data center %s", ref.tmpl.Name)
-		case ref.obj != nil && !equalJSON(ref.obj.Spec, spec):
+		case ref.obj != nil && (!equalJSON(ref.obj.Spec, spec) || remote.SetOwner(ref.obj, cl)):
 			ref.obj.Spec = spec
 			if err := ref.c.Update(ctx, ref.obj); err != nil {
 				return ctrl.Result{}, err
@@ -187,11 +220,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 	}
 	logger.V(1).Info("reconciled", "phase", status.Phase)
-	// Remote data centers are not watched: poll them.
+	// Data centers' changes come through watches; this is a safety resync.
 	if !allReady {
-		return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: time.Minute}, nil
 	}
-	return ctrl.Result{RequeueAfter: 20 * time.Second}, nil
+	return ctrl.Result{RequeueAfter: 10 * time.Minute}, nil
 }
 
 func equalJSON(a, b any) bool {
