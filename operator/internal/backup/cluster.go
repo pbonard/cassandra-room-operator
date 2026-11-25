@@ -13,8 +13,13 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	v1 "github.com/pbonard/cassandra-room-operator/operator/api/v1alpha1"
 	"github.com/pbonard/cassandra-room-operator/operator/internal/cluster"
@@ -44,10 +49,11 @@ const (
 
 // dcTarget is where a data center's part goes.
 type dcTarget struct {
-	name string
-	c    client.Client
-	ns   string
-	obj  string // the CassandraRoomDatacenter
+	name       string
+	k8sContext string
+	c          client.Client
+	ns         string
+	obj        string // the CassandraRoomDatacenter
 }
 
 func (cp *ControlPlane) targets(ctx context.Context, clusterNs, clusterName string) ([]dcTarget, error) {
@@ -65,7 +71,7 @@ func (cp *ControlPlane) targets(ctx context.Context, clusterNs, clusterName stri
 		if ns == "" {
 			ns = cl.Namespace
 		}
-		out = append(out, dcTarget{name: t.Name, c: c, ns: ns, obj: cluster.DatacenterObject(cl.Name, t.Name)})
+		out = append(out, dcTarget{name: t.Name, k8sContext: t.K8sContext, c: c, ns: ns, obj: cluster.DatacenterObject(cl.Name, t.Name)})
 	}
 	return out, nil
 }
@@ -73,12 +79,37 @@ func (cp *ControlPlane) targets(ctx context.Context, clusterNs, clusterName stri
 func partName(parent, dc string) string { return names.Sanitize(parent + "-" + dc) }
 
 // BackupReconciler runs CassandraRoomBackups.
-type BackupReconciler struct{ ControlPlane }
+type BackupReconciler struct {
+	ControlPlane
+	ctrl controller.Controller
+}
 
 // +kubebuilder:rbac:groups=cassandraroom.pbonard.github.io,resources=cassandraroombackups;cassandraroombackups/status;cassandraroombackups/finalizers;cassandraroombackupschedules;cassandraroombackupschedules/status;cassandraroomrestores;cassandraroomrestores/status,verbs=get;list;watch;create;update;patch;delete
 
 func (r *BackupReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).For(&v1.CassandraRoomBackup{}).Named("cassandraroombackup").Complete(r)
+	c, err := ctrl.NewControllerManagedBy(mgr).For(&v1.CassandraRoomBackup{}).
+		Watches(&v1.DatacenterBackup{}, handler.EnqueueRequestsFromMapFunc(ownerOf)).
+		Named("cassandraroombackup").Build(r)
+	r.ctrl = c
+	return err
+}
+
+func ownerOf(_ context.Context, o client.Object) []reconcile.Request { return remote.Owner(o) }
+
+// watchParts watches the parts of type obj in the data centers' remote
+// clusters.
+func watchParts[T client.Object](ctx context.Context, cp *ControlPlane, c controller.Controller, id string, obj T, targets []dcTarget) error {
+	for _, t := range targets {
+		err := cp.Remote.Watch(ctx, t.k8sContext, id, func(ch cache.Cache) error {
+			return c.Watch(source.Kind(ch, obj, handler.TypedEnqueueRequestsFromMapFunc(func(_ context.Context, o T) []reconcile.Request {
+				return remote.Owner(o)
+			})))
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -104,6 +135,9 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if st.Phase == v1.BackupSucceeded || st.Phase == v1.BackupFailed {
 		return ctrl.Result{}, nil
 	}
+	if err := watchParts(ctx, &r.ControlPlane, r.ctrl, "backup", &v1.DatacenterBackup{}, targets); err != nil {
+		return ctrl.Result{}, err
+	}
 	if st.StartedAt == nil {
 		st.StartedAt, st.Phase = &metav1.Time{Time: time.Now()}, v1.BackupRunning
 	}
@@ -117,6 +151,7 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			part = &v1.DatacenterBackup{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace,
 				Labels: map[string]string{LabelBackup: b.Name, names.LabelCluster: names.Sanitize(b.Spec.Cluster)}},
 				Spec: v1.DatacenterBackupSpec{Datacenter: t.obj, Backup: b.Name, Keyspaces: b.Spec.Keyspaces}}
+			remote.SetOwner(part, b)
 			if err := t.c.Create(ctx, part); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -151,7 +186,8 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 	if st.Phase == v1.BackupRunning {
-		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+		// The parts' changes come through watches; this is a safety resync.
+		return ctrl.Result{RequeueAfter: time.Minute}, nil
 	}
 	return ctrl.Result{}, nil
 }
@@ -252,10 +288,17 @@ func (r *ScheduleReconciler) retain(ctx context.Context, s *v1.CassandraRoomBack
 
 // RestoreReconciler runs CassandraRoomRestores: every data center
 // downloads; the first truncates the tables; then every one imports.
-type RestoreReconciler struct{ ControlPlane }
+type RestoreReconciler struct {
+	ControlPlane
+	ctrl controller.Controller
+}
 
 func (r *RestoreReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).For(&v1.CassandraRoomRestore{}).Named("cassandraroomrestore").Complete(r)
+	c, err := ctrl.NewControllerManagedBy(mgr).For(&v1.CassandraRoomRestore{}).
+		Watches(&v1.DatacenterRestore{}, handler.EnqueueRequestsFromMapFunc(ownerOf)).
+		Named("cassandraroomrestore").Build(r)
+	r.ctrl = c
+	return err
 }
 
 func (r *RestoreReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -277,6 +320,9 @@ func (r *RestoreReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err != nil {
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, client.IgnoreNotFound(err)
 	}
+	if err := watchParts(ctx, &r.ControlPlane, r.ctrl, "restore", &v1.DatacenterRestore{}, targets); err != nil {
+		return ctrl.Result{}, err
+	}
 	if st.StartedAt == nil {
 		st.StartedAt, st.Phase = &metav1.Time{Time: time.Now()}, v1.BackupRunning
 	}
@@ -289,6 +335,7 @@ func (r *RestoreReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			part = &v1.DatacenterRestore{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace,
 				Labels: map[string]string{LabelRestore: rs.Name, names.LabelCluster: names.Sanitize(rs.Spec.Cluster)}},
 				Spec: v1.DatacenterRestoreSpec{Datacenter: t.obj, Backup: rs.Spec.Backup, Keyspaces: rs.Spec.Keyspaces, Truncate: i == 0}}
+			remote.SetOwner(part, rs)
 			if err := t.c.Create(ctx, part); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -341,5 +388,5 @@ func (r *RestoreReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if st.Phase == v1.BackupSucceeded || st.Phase == v1.BackupFailed {
 		return ctrl.Result{}, nil
 	}
-	return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	return ctrl.Result{RequeueAfter: time.Minute}, nil // a safety resync: the parts are watched
 }

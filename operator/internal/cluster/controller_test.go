@@ -131,6 +131,29 @@ func TestMultiClusterDatacenters(t *testing.T) {
 		return b.Get(ctx, east, dc) == nil && dc.Spec.Size == 3 && dc.Status.ReadyNodes == 3 && dc.Status.Phase == v1.PhaseReady
 	}, 30*time.Second, 100*time.Millisecond)
 
+	// The cluster hears of remote changes through watches (it resyncs only
+	// every few minutes), also after its kubeconfig was rotated.
+	kc := &corev1.Secret{}
+	require.NoError(t, a.Get(ctx, types.NamespacedName{Namespace: "control", Name: "east-kubeconfig"}, kc))
+	kc.Labels = map[string]string{"rotated": "yes"}
+	require.NoError(t, a.Update(ctx, kc))
+	require.Eventually(t, func() bool {
+		c := &v1.CassandraRoomCluster{}
+		if a.Get(ctx, client.ObjectKeyFromObject(cl), c) != nil {
+			return false
+		}
+		c.Spec.Datacenters[1].Size = 2
+		return a.Update(ctx, c) == nil
+	}, 5*time.Second, 50*time.Millisecond)
+	require.Eventually(t, func() bool {
+		c := &v1.CassandraRoomCluster{}
+		if a.Get(ctx, client.ObjectKeyFromObject(cl), c) != nil || len(c.Status.Datacenters) != 2 {
+			return false
+		}
+		d := c.Status.Datacenters[1]
+		return d.Size == 2 && d.ReadyNodes == 2 && d.Phase == v1.PhaseReady && c.Status.Phase == v1.PhaseReady
+	}, 30*time.Second, 100*time.Millisecond, "the cluster saw the remote data center shrink")
+
 	// Deleting the cluster deletes its data centers everywhere.
 	require.NoError(t, a.Delete(ctx, cl))
 	require.Eventually(t, func() bool {

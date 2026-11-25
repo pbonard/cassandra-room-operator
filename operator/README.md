@@ -120,6 +120,13 @@ cluster that runs it. The operator in the control plane's cluster:
   then the object deleted. First change the keyspaces so they no longer
   replicate to it.
 
+The control plane watches the objects it creates in remote clusters (data
+centers, and the per-data-center parts of backups and restores) through a
+cache per remote cluster, restarted when its kubeconfig changes. Each such
+object is annotated with the object it belongs to, since owner references
+cannot cross clusters; it resyncs only every few minutes as a safety net. The
+kubeconfig's user must be able to list and watch those objects.
+
 Every Kubernetes cluster runs the operator. The ones without the control
 plane run `manager --control-plane=false`. See `config/samples/multi-dc.yaml`
 for nine nodes in three data centers in three clusters.
@@ -196,8 +203,6 @@ make test                 # unit and envtest tests (setup-envtest)
 
 ## Not done
 
-- Watches on remote clusters: the control plane polls the remote data
-  centers (every few seconds while they change).
 - Point-in-time restores, restores into another cluster or topology, and
   backups to GCS or Azure.
 - Metrics of the nodes. cassandra-room has no Prometheus endpoint yet; the
